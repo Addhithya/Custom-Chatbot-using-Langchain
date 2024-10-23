@@ -1,0 +1,7 @@
+langchain
+langchain-ollama
+langchain-pinecone
+pinecone-client
+python-dotenv
+flask
+requests
