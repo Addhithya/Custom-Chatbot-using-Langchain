@@ -1,52 +1,130 @@
-from flask import Flask, request, jsonify
-from langchain_data_extractor import extract_data
-from pinecone_setup import PineconeStore
-from ollama_embeddings import get_embeddings  # Importing the get_embeddings function
-import requests
+from flask import Flask, request, jsonify, render_template
+# from flask_restful import Api, Resource
+from flask_cors import CORS
+from langchain_community.document_loaders import WebBaseLoader
+from langchain_community.vectorstores import Chroma
+from langchain_ollama import OllamaEmbeddings, ChatOllama
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.text_splitter import CharacterTextSplitter
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder="templates", static_folder="static")
+CORS(app)
 
-# Define the URL to extract data from
-url = "https://brainlox.com/courses/category/technical"
 
-# Extract data from the URL and store them in chunks
-texts = extract_data(url)
+# Set up LangChain components (same as before)
+model_local = ChatOllama(model="mistral")
+urls = ["https://brainlox.com/courses/category/technical"]
+docs = [WebBaseLoader(url).load() for url in urls]
+docs_list = [item for sublist in docs for item in sublist]
+text_splitter = CharacterTextSplitter.from_tiktoken_encoder(chunk_size=7500, chunk_overlap=100)
+doc_splits = text_splitter.split_documents(docs_list)
 
-# Set up Pinecone vector store with extracted texts
-vectorstore = PineconeStore()
+vectorstore = Chroma.from_documents(
+    documents=doc_splits,
+    collection_name="rag-chroma",
+    embedding=OllamaEmbeddings(model='nomic-embed-text'),
+)
+retriever = vectorstore.as_retriever()
 
-# Define metadata for the document and chunks
-metadata = {"id": "technical_courses", "source": url}
-chunks = texts  # Assuming `texts` are already the chunks
+after_rag_template = """Answer the question based only on the following context:
+{context}
+Question: {question}
+"""
+after_rag_prompt = ChatPromptTemplate.from_template(after_rag_template)
+after_rag_chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | after_rag_prompt 
+    | model_local 
+    | StrOutputParser()
+)
 
-# Generate embeddings for each chunk
-embedding_model = get_embeddings()  # Initialize the embedding model
+# Serve the frontend
+@app.route("/")
+def home():
+    return render_template("index.html")
 
-# Ensure we are only passing plain text to the embed_query method
-vectors = [embedding_model.embed_query(text) for text in chunks if isinstance(text, str)]
-
-# Save vectors to Pinecone
-vectorstore.save_vectors(vectors, metadata, chunks)
-
-# FastAPI endpoint for Ollama
-ollama_host = "http://localhost:8000/generate"
-
-@app.route('/chat', methods=['POST'])
-def chat():
-    user_message = request.json.get("message")
-    if not user_message:
-        return jsonify({"error": "Please provide a message."}), 400
+@app.route("/query", methods=['POST'])
+def query():
+    data = request.get_json()
+    question = data.get("question", "")
     
-    # Prepare the payload for the FastAPI endpoint
-    payload = {"prompt": user_message}
-    
-    # Send a POST request to the FastAPI Ollama endpoint
-    response = requests.post(ollama_host, json=payload)
+    try:
+        # Invoke the RAG chain with the question
+        response = after_rag_chain.invoke(question)
+        
+        # Print the response type for debugging
+        print("Response type:", type(response))
 
-    if response.status_code == 200:
-        return jsonify({"response": response.json()["text"]})
-    else:
-        return jsonify({"error": "Failed to get response from Ollama."}), 500
+        if not isinstance(response, str):
+            response = str(response)
+
+        # Return the response as JSON
+        return jsonify(response=response)
+    
+    except Exception as e:
+        # Print the exception for debugging
+        print(f"Exception occurred: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001)
+    app.run(debug=True)
+
+
+
+
+
+
+# from langchain_community.document_loaders import WebBaseLoader
+# from langchain_community.vectorstores import Chroma
+# from langchain_ollama import OllamaEmbeddings
+# from langchain_ollama import ChatOllama
+# from langchain_core. runnables import RunnablePassthrough
+# from langchain_core.output_parsers import StrOutputParser
+# from langchain_core.prompts import ChatPromptTemplate
+# from langchain.text_splitter import CharacterTextSplitter
+
+# model_local = ChatOllama(model="mistral")
+
+# urls = [
+#     "https://brainlox.com/courses/category/technical"
+# ]
+# docs = [WebBaseLoader(url).load() for url in urls]
+# docs_list = [item for sublist in docs for item in sublist]
+# text_splitter = CharacterTextSplitter.from_tiktoken_encoder(chunk_size=1500, chunk_overlap = 200)
+# doc_splits = text_splitter.split_documents(docs_list)
+
+# # 2. Convert documents to Embeddings and store them
+# vectorstore = Chroma. from_documents (
+#     documents=doc_splits,
+#     collection_name= "rag-chroma",
+#     embedding=OllamaEmbeddings(model='nomic-embed-text'),
+# )
+
+# retriever = vectorstore.as_retriever()
+
+# # # 3. Before RAG
+# # print ("Before RAG\n" )
+# # before_rag_template = "What are {topic}"
+# # before_rag_prompt = ChatPromptTemplate.from_template (before_rag_template)
+# # before_rag_chain = before_rag_prompt | model_local | StrOutputParser ()
+# # print(before_rag_chain.invoke({"topic": "least cost courses"}))
+
+# # 4. After RAG
+# print("\n########\nAfter RAG\n")
+# after_rag_template = """Answer the question based only on the following context:
+# {context}
+# Question: {question}
+# """
+# after_rag_prompt = ChatPromptTemplate.from_template(after_rag_template)
+# after_rag_chain = (
+# {"context": retriever, "question": RunnablePassthrough ()}
+#     | after_rag_prompt 
+#     | model_local
+#     | StrOutputParser ()
+# )
+
+# print(after_rag_chain.invoke("What are the courses with least cost?"))
