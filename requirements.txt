@@ -1,7 +1,9 @@
 langchain
+langchain-community
+langchain-core
+chromadb
+tiktoken
 langchain-ollama
-langchain-pinecone
-pinecone-client
-python-dotenv
+beautifulsoup4
 flask
-requests
+flask-cors
